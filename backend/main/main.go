@@ -1,84 +1,67 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"flag"
 	"log"
-	"strings"
+	"net/http"
 
-	"github.com/diakovliev/mesap/backend/fake_database"
-	"github.com/diakovliev/mesap/backend/ifaces"
-	"github.com/diakovliev/mesap/backend/models"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/diakovliev/mesap/backend/controllers"
 )
 
 var (
-	user0    models.User
-	user1    models.User
-	database ifaces.Database
+	defaultListenAddressTLS = ":8443"
+	defaultListenAddress    = ":8080"
+	listenAddress           = defaultListenAddress
+	certFile                = ""
+	keyFile                 = ""
+	enableTls               = false
+
+	// Controllers
+	//auth *controllers.Auth = nil
 )
 
 func init() {
-	user0 = models.User{Login: "Test login 0"}
-	user1 = models.User{Login: "Test login 1"}
 
-	database = fake_database.NewDatabase()
+	enableTls = *flag.Bool("tls", enableTls, "Enable TLS support")
+	if !enableTls {
+		log.Println("TLS: OFF")
 
-	log.Println("initialize")
+		listenAddress = *flag.String("listen", defaultListenAddress, "Listen address")
+		log.Printf("Listen address: %s", listenAddress)
+
+	} else {
+		log.Println("TLS: ON")
+
+		certFile = *flag.String("cert", certFile, "Server certificate")
+		log.Printf("Certificate: %s", certFile)
+
+		keyFile = *flag.String("key", keyFile, "Server certificate key")
+		log.Printf("Key: %s", keyFile)
+
+		listenAddress = *flag.String("listen", defaultListenAddressTLS, "Listen address")
+		log.Printf("Listen address: %s", listenAddress)
+	}
 }
 
 func main() {
-	if err := database.Open(); err != nil {
-		panic(err)
+
+	r := chi.NewRouter()
+
+	r.Use(middleware.Logger)
+
+	auth := controllers.NewAuthController()
+	r.Mount("/auth", auth.Controller())
+
+	if enableTls {
+		if err := http.ListenAndServeTLS(listenAddress, certFile, keyFile, r); err != nil {
+			log.Panicf("Fatal: %s", err)
+		}
+	} else {
+		if err := http.ListenAndServe(listenAddress, r); err != nil {
+			log.Panicf("Fatal: %s", err)
+		}
 	}
-	defer database.Close()
-
-	users, err := database.Users()
-	if err != nil {
-		panic(err)
-	}
-
-	newId, err := users.Insert(user0)
-	if err != nil {
-		panic(err)
-	}
-	log.Printf("%d", newId)
-
-	newId, err = users.Insert(user1)
-	if err != nil {
-		panic(err)
-	}
-	log.Printf("%d", newId)
-
-	users.Each(
-		func(record models.User) bool {
-			writer := bytes.NewBufferString("")
-			encoder := json.NewEncoder(writer)
-
-			if err := encoder.Encode(record); err != nil {
-				panic(err)
-			}
-
-			dataStr := writer.String()
-
-			log.Printf("[ENC] str: %s", dataStr)
-
-			var user_in models.User
-
-			decoder := json.NewDecoder(strings.NewReader(dataStr))
-			if err := decoder.Decode(&user_in); err != nil {
-				panic(err)
-			}
-
-			log.Printf("[DEC] User.Id: %d, User.Login: '%s'", user_in.GetId(), user_in.Login)
-
-			return true
-		},
-	)
-
-	users.Delete(0)
-	users.Delete(1)
-	// err = users.Delete(100)
-	// if err != nil {
-	// 	panic(err)
-	// }
 }
