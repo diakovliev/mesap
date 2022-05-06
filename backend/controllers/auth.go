@@ -1,11 +1,13 @@
 package controllers
 
 import (
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/opencoff/go-srp"
@@ -18,8 +20,15 @@ const (
 	N_BITS = 2048
 )
 
+type AuthServer struct {
+	server string
+	user   models.User
+}
+
 type Auth struct {
-	db ifaces.Database
+	sync.Mutex
+	db      ifaces.Database
+	servers map[string]AuthServer
 }
 
 type RegisterRequestData struct {
@@ -45,13 +54,13 @@ func (lrd *LoginRequestData) String() string {
 }
 
 type LoginResponseData struct {
+	Server  string
 	Secret1 string
 	Secret2 string
-	Server  string
 }
 
 func (lrd *LoginResponseData) String() string {
-	return fmt.Sprintf("Secret1: '%s' Secret2: '%s'", lrd.Secret1, lrd.Secret2)
+	return fmt.Sprintf("Server: '%s' Secret1: '%s' Secret2: '%s'", lrd.Server, lrd.Secret1, lrd.Secret2)
 }
 
 type Login2RequestData struct {
@@ -62,7 +71,7 @@ type Login2RequestData struct {
 }
 
 func (l2rd *Login2RequestData) String() string {
-	return fmt.Sprintf("Secret1: '%s' Secret2: '%s' Secret3: '%s'", l2rd.Secret1, l2rd.Secret2, l2rd.Secret3)
+	return fmt.Sprintf("Server: '%s' Secret1: '%s' Secret2: '%s' Secret3: '%s'", l2rd.Server, l2rd.Secret1, l2rd.Secret2, l2rd.Secret3)
 }
 
 type Login2ResponseData struct {
@@ -78,7 +87,7 @@ type LogoutRequestData struct {
 }
 
 func NewAuthController(db ifaces.Database) *Auth {
-	return &Auth{db: db}
+	return &Auth{db: db, servers: make(map[string]AuthServer)}
 }
 
 func (a *Auth) Controller() chi.Router {
@@ -88,6 +97,41 @@ func (a *Auth) Controller() chi.Router {
 	r.Post("/login2", a.PostLogin2)
 	r.Post("/logout", a.PostLogout)
 	return r
+}
+
+func (a *Auth) addServer(content string, record models.User) string {
+	a.Lock()
+	defer a.Unlock()
+
+	checksum := sha1.New()
+	checksum.Write([]byte(content))
+
+	key := base64.StdEncoding.EncodeToString(checksum.Sum(nil))
+	a.servers[key] = AuthServer{
+		server: content,
+		user:   record,
+	}
+	return key
+}
+
+func (a *Auth) forgetServer(key string) {
+	a.Lock()
+	defer a.Unlock()
+
+	_, ok := a.servers[key]
+	if !ok {
+		return
+	}
+
+	delete(a.servers, key)
+}
+
+func (a *Auth) getServer(key string) (AuthServer, bool) {
+	a.Lock()
+	defer a.Unlock()
+
+	content, ok := a.servers[key]
+	return content, ok
 }
 
 func (a *Auth) PostRegister(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +249,7 @@ func (a *Auth) PostLogin(w http.ResponseWriter, r *http.Request) {
 
 	//responseData.Secret1 = requestData.Secret1
 	responseData.Secret2 = srv.Credentials()
-	responseData.Server = srv.Marshal()
+	responseData.Server = a.addServer(srv.Marshal(), record)
 
 	encoder := json.NewEncoder(w)
 	if err := encoder.Encode(responseData); err != nil {
@@ -229,7 +273,16 @@ func (a *Auth) PostLogin2(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Login2 data: %s", requestData.String())
 
-	srv, err := srp.UnmarshalServer(requestData.Server)
+	server, ok := a.getServer(requestData.Server)
+	if !ok {
+		log.Printf("Unknown srp server id: %s", requestData.Server)
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+	// Forget SRP context
+	defer a.forgetServer(requestData.Server)
+
+	srv, err := srp.UnmarshalServer(server.server)
 	if err != nil {
 		log.Printf("Can't unmarshal srp server instance: %s", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -243,7 +296,7 @@ func (a *Auth) PostLogin2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Create token
+	// TODO: Create session for user. Autorized user info in server.user!
 	responseData.Token = proof
 
 	serverKey := base64.StdEncoding.EncodeToString(srv.RawKey())
