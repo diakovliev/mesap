@@ -110,6 +110,7 @@ func TestRegisterLogin(t *testing.T) {
 	}
 
 	loginData := LoginRequestData{
+		Login:   registerData.Login,
 		Secret1: c.Credentials(),
 	}
 

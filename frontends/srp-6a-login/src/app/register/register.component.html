@@ -1,0 +1,10 @@
+<p>register works!</p>
+<div class="form-grouo">
+  <label for="register-input">Login:</label>
+  <input id="register-input" type="text" class="form-input" [(ngModel)]="data.login">
+  <label for="register-mail">Mail:</label>
+  <input id="register-mail" type="text" class="form-input" [(ngModel)]="data.mail">
+  <label for="register-password">Password:</label>
+  <input id="register-password" type="text" class="form-input" [(ngModel)]="data.password">
+  <button type="submit" (click)="registerUser()">Register</button>
+</div>

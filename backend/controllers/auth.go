@@ -46,11 +46,12 @@ type RegisterResponseData struct {
 }
 
 type LoginRequestData struct {
+	Login   string
 	Secret1 string
 }
 
 func (lrd *LoginRequestData) String() string {
-	return fmt.Sprintf("Secret1: '%s'", lrd.Secret1)
+	return fmt.Sprintf("Login: '%s' Secret1: '%s'", lrd.Login, lrd.Secret1)
 }
 
 type LoginResponseData struct {
@@ -211,7 +212,7 @@ func (a *Auth) PostLogin(w http.ResponseWriter, r *http.Request) {
 	// TODO: Login
 	log.Printf("Login data: %s", requestData.String())
 
-	id, A, err := srp.ServerBegin(requestData.Secret1)
+	_, A, err := srp.ServerBegin(requestData.Secret1)
 
 	users, err := a.db.Users()
 	if err != nil {
@@ -223,7 +224,7 @@ func (a *Auth) PostLogin(w http.ResponseWriter, r *http.Request) {
 	//log.Printf("id: %s", id)
 
 	record, err := users.Find(func(u models.User) bool {
-		return u.Ii == id
+		return u.Login == requestData.Login
 	})
 	if err != nil {
 		log.Printf("Can't find user record: %s", err)
