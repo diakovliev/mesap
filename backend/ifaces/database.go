@@ -1,6 +1,10 @@
 package ifaces
 
-import "github.com/diakovliev/mesap/backend/models"
+import (
+	"errors"
+
+	"github.com/diakovliev/mesap/backend/models"
+)
 
 type Id interface {
 	SetId(models.IdData)
@@ -28,3 +32,9 @@ type Database interface {
 	Peoples() (Table[models.People], error)
 	Roles() (Table[models.Role], error)
 }
+
+var (
+	ErrWrongRecord  = errors.New("Wrong record!")
+	ErrEmptyTable   = errors.New("Table is empty!")
+	ErrNoSuchRecord = errors.New("No such record!")
+)

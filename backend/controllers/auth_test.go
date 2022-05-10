@@ -1,9 +1,6 @@
 package controllers
 
 import (
-	"bytes"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,14 +9,16 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/opencoff/go-srp"
+	"github.com/kong/go-srp"
 
 	"github.com/diakovliev/mesap/backend/fake_database"
 	"github.com/diakovliev/mesap/backend/ifaces"
 )
 
 var (
-	testToken = "ZZ.YY.XX"
+	testSalt     = []byte("test salt")
+	testLogin    = []byte("bob")
+	testPassword = []byte("1234245asdf")
 )
 
 type AuthTestServer struct {
@@ -77,7 +76,19 @@ func (s *AuthTestServer) NewClient(token string) *TestTransport {
 	return &TestTransport{Token: token, Server: s}
 }
 
+func ensureResponse(t *testing.T, resp *http.Response, err error) {
+	if err != nil {
+		t.Fatalf("Login request error: %s", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Bad status code: %d", resp.StatusCode)
+	}
+}
+
 func TestRegisterLogin(t *testing.T) {
+
+	testVerifier := srp.ComputeVerifier(SRP_PARAMS, testSalt, testLogin, testPassword)
+
 	testDatabase := fake_database.NewDatabase()
 
 	testServer := NewAuthTestServer(testDatabase)
@@ -86,98 +97,53 @@ func TestRegisterLogin(t *testing.T) {
 	testClient := testServer.NewClient("")
 
 	registerData := RegisterRequestData{
-		Login:   "Test login",
-		Mail:    "test@mail.com",
-		Secret0: "1234567656",
+		Login:    AuthEncodeBytes(testLogin),
+		Salt:     AuthEncodeBytes(testSalt),
+		Verifier: AuthEncodeBytes(testVerifier),
 	}
 
-	body := bytes.NewBufferString("")
-	encoder := json.NewEncoder(body)
-	if err := encoder.Encode(registerData); err != nil {
-		t.Fatalf("Register request encoding error: %s", err)
-	}
+	testClient._Post("register", AuthEncodeJson(registerData))
 
-	testClient._Post("register", body)
-
-	s, err := srp.New(N_BITS)
-	if err != nil {
-		t.Fatalf("Can't create srp instance! Error: %s", err)
-	}
-
-	c, err := s.NewClient([]byte(registerData.Login), []byte(registerData.Secret0))
-	if err != nil {
-		t.Fatalf("Can't create srp client instance! Error: %s", err)
-	}
+	srpClient := srp.NewClient(SRP_PARAMS, testSalt, testLogin, testPassword, srp.GenKey())
 
 	loginData := LoginRequestData{
 		Login:   registerData.Login,
-		Secret1: c.Credentials(),
+		Secret1: AuthEncodeBytes(srpClient.ComputeA()),
 	}
 
-	body = bytes.NewBufferString("")
-	encoder = json.NewEncoder(body)
-	if err := encoder.Encode(loginData); err != nil {
-		t.Fatalf("Login request encoding error: %s", err)
-	}
+	resp, err := testClient._Post("login", AuthEncodeJson(loginData))
+	ensureResponse(t, resp, err)
 
-	resp, err := testClient._Post("login", body)
-	if err != nil {
-		t.Fatalf("Login request error: %s", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Bad status code: %d", resp.StatusCode)
-	}
-
-	decoder := json.NewDecoder(resp.Body)
-	var loginResponse LoginResponseData
-
-	err = decoder.Decode(&loginResponse)
-	if err != nil {
+	loginResponse := AuthDecodeJson[LoginResponseData](resp.Body, func(err error) {
 		t.Fatalf("Can't decode login responce! Error: %s", err)
+	})
+	if loginResponse == nil {
+		return
 	}
 
 	t.Logf("Login response: %s", loginResponse.String())
 
-	clientAuth, err := c.Generate(loginResponse.Secret2)
-	if err != nil {
-		t.Fatalf("Can't calculate client auth! Error: %s", err)
-	}
+	srpClient.SetB(AuthDecodeString(loginResponse.Secret2))
 
 	login2Data := Login2RequestData{
-		//Secret1: loginResponse.Secret1,
-		//Secret2: loginResponse.Secret2,
 		Server:  loginResponse.Server,
-		Secret3: clientAuth,
+		Secret3: AuthEncodeBytes(srpClient.ComputeM1()),
 	}
 
-	body = bytes.NewBufferString("")
-	encoder = json.NewEncoder(body)
-	if err := encoder.Encode(login2Data); err != nil {
-		t.Fatalf("Login2 request encoding error: %s", err)
+	resp, err = testClient._Post("login2", AuthEncodeJson(login2Data))
+	ensureResponse(t, resp, err)
+
+	login2Response := AuthDecodeJson[Login2ResponseData](resp.Body, func(err error) {
+		t.Fatalf("Can't decode login responce! Error: %s", err)
+	})
+	if login2Response == nil {
+		return
 	}
 
-	resp, err = testClient._Post("login2", body)
+	err = srpClient.CheckM2(AuthDecodeString(login2Response.Secret4))
 	if err != nil {
-		t.Fatalf("Login2 request error: %s", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Login2 bad status code: %d", resp.StatusCode)
+		t.Fatalf("Client check M2 err: %s", err)
 	}
 
-	decoder = json.NewDecoder(resp.Body)
-	var login2Response Login2ResponseData
-
-	err = decoder.Decode(&login2Response)
-	if err != nil {
-		t.Fatalf("Can't decode login2 response! Error: %s", err)
-	}
-
-	t.Logf("Login2 response: %s", login2Response.String())
-
-	if !c.ServerOk(login2Response.Token) {
-		t.Fatalf("Sever proof validation error!")
-	}
-
-	clientKey := base64.StdEncoding.EncodeToString(c.RawKey())
-	t.Logf("client key: %s", clientKey)
+	t.Logf("Client K: '%s'", AuthEncodeBytes(srpClient.ComputeK()))
 }

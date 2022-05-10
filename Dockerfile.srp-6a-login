@@ -1,0 +1,25 @@
+FROM node:18.1.0 as angular-cli
+RUN npm install -g @angular/cli
+
+# Build Angular app
+FROM angular-cli as build-angular
+WORKDIR /build-angular
+COPY frontends/srp-6a-login .
+RUN npm install
+RUN ng build --prod
+
+# Build C# backend
+FROM golang:1.18.1-alpine AS build-go
+WORKDIR /build-go
+COPY backend .
+ENV CGO_ENABLED=1
+RUN go build -o srp6alogin -ldflags="-extldflags=-static" -tags osusergo,netgo main/main.go
+
+# Make final image
+FROM scratch
+# FROM alpine
+# RUN apk --update --no-cache add strace binutils
+COPY --from=build-go /build-go/srp6alogin /app/srp6alogin
+COPY --from=build-angular /build-angular/dist/srp-6a-login /app/static_content
+WORKDIR /app
+ENTRYPOINT [ "/app/srp6alogin", "--static", "/app/static_content" ]

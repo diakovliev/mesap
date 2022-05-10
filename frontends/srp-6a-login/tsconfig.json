@@ -22,7 +22,6 @@
       "crypto": [ "./node_modules/crypto-browserify" ],
       "stream": [ "./node_modules/stream-browserify" ],
       "assert": [ "./node_modules/assert" ],
-      "browser-process": [ "./node_modules/browser-process" ],
     },
     "lib": [
       "es2020",

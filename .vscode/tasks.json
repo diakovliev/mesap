@@ -1,0 +1,48 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "focus": true,
+        "close": true
+    },
+    "tasks": [
+        {
+            "label": "[srp6a-docker] stop",
+            "group": "test",
+            "type": "shell",
+            "command": "docker kill srp-6a-login",
+            "problemMatcher": [],
+        },
+        {
+            "label": "[srp6a-docker] build",
+            "group": "build",
+            "type": "shell",
+            "command": "docker build -f Dockerfile.srp-6a-login -t srp-6a-login .",
+            "problemMatcher": [],
+        },
+        {
+            "label": "[srp6a-docker] start",
+            "group": "test",
+            "dependsOn": [
+                "[srp6a-docker] build",
+            ],
+            "type": "shell",
+            "command": "docker run -ti --rm --name srp-6a-login -p 8080:8080 srp-6a-login",
+            "problemMatcher": [],
+            "isBackground": true
+        },
+        {
+            "label": "[srp6a-docker] restart",
+            "group": "test",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "[srp6a-docker] stop",
+                "[srp6a-docker] build",
+                "[srp6a-docker] start",
+            ]
+        }
+    ]
+}

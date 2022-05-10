@@ -1,18 +1,11 @@
 package fake_database
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/diakovliev/mesap/backend/ifaces"
 	"github.com/diakovliev/mesap/backend/models"
-)
-
-var (
-	ErrWrongRecord  = errors.New("Wrong record!")
-	ErrEmptyTable   = errors.New("Table is empty!")
-	ErrNoSuchRecord = errors.New("No such record!")
 )
 
 type FakeTable[M ifaces.Models] struct {
@@ -53,7 +46,7 @@ func (T *FakeTable[M]) Insert(record M) (models.IdData, error) {
 
 	id, ok := i.(ifaces.Id)
 	if !ok {
-		return models.BAD_ID, ErrWrongRecord
+		return models.BAD_ID, ifaces.ErrWrongRecord
 	}
 
 	id.SetId(T.nextId())
@@ -80,7 +73,7 @@ func (T *FakeTable[M]) Update(record M) error {
 
 	id, ok := i.(ifaces.Id)
 	if !ok {
-		return ErrWrongRecord
+		return ifaces.ErrWrongRecord
 	}
 
 	_, ok = T.table[id.GetId()]
@@ -102,7 +95,7 @@ func (T *FakeTable[M]) Delete(id models.IdData) error {
 
 	_, ok := T.table[id]
 	if !ok {
-		return ErrNoSuchRecord
+		return ifaces.ErrNoSuchRecord
 	}
 
 	delete(T.table, id)
@@ -122,7 +115,7 @@ func (T *FakeTable[M]) Get(id models.IdData) (M, error) {
 
 	ret, ok := T.table[id]
 	if !ok {
-		return res, ErrNoSuchRecord
+		return res, ifaces.ErrNoSuchRecord
 	}
 
 	res = *ret
@@ -138,7 +131,7 @@ func (T *FakeTable[M]) Each(callback func(record M) bool) error {
 		T.parent.Unlock()
 	}()
 
-	err := ErrEmptyTable
+	err := ifaces.ErrEmptyTable
 
 	for _, record := range T.table {
 		err = nil
@@ -158,14 +151,15 @@ func (T *FakeTable[M]) Find(callback func(record M) bool) (M, error) {
 		T.parent.Unlock()
 	}()
 
-	err := ErrEmptyTable
+	err := ifaces.ErrEmptyTable
 
 	var res M
 	for _, record := range T.table {
-		err = nil
+		err = ifaces.ErrNoSuchRecord
 
 		if callback(*record) {
 			res = *record
+			err = nil
 			break
 		}
 	}

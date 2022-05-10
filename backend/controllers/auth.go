@@ -1,23 +1,27 @@
 package controllers
 
 import (
-	"crypto/sha1"
+	"crypto"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/opencoff/go-srp"
+	"github.com/kong/go-srp"
 
 	"github.com/diakovliev/mesap/backend/ifaces"
 	"github.com/diakovliev/mesap/backend/models"
 )
 
 const (
-	N_BITS = 2048
+	HASH = crypto.SHA1
+)
+
+var (
+	SRP_PARAMS = srp.GetParams(4096)
 )
 
 type AuthServer struct {
@@ -32,17 +36,23 @@ type Auth struct {
 }
 
 type RegisterRequestData struct {
-	Login   string
-	Mail    string
-	Secret0 string // User password
+	Login    string `json: "login"`
+	Salt     string `json: "salt"`
+	Verifier string `json: "verifier"`
+
+	// TODO: User extended info
 }
 
 func (rrd *RegisterRequestData) String() string {
-	return fmt.Sprintf("Login: '%s' Mail: '%s' Secret0: '%s'", rrd.Login, rrd.Mail, rrd.Secret0)
+	return fmt.Sprintf("Login: '%s' Salt: '%s' Verifier: '%s'", rrd.Login, rrd.Salt, rrd.Verifier)
 }
 
 type RegisterResponseData struct {
 	UserId models.IdData
+}
+
+func (rrd *RegisterResponseData) String() string {
+	return fmt.Sprintf("UserId: '%d'", rrd.UserId)
 }
 
 type LoginRequestData struct {
@@ -56,31 +66,28 @@ func (lrd *LoginRequestData) String() string {
 
 type LoginResponseData struct {
 	Server  string
-	Secret1 string
 	Secret2 string
 }
 
 func (lrd *LoginResponseData) String() string {
-	return fmt.Sprintf("Server: '%s' Secret1: '%s' Secret2: '%s'", lrd.Server, lrd.Secret1, lrd.Secret2)
+	return fmt.Sprintf("Server: '%s' Secret2: '%s'", lrd.Server, lrd.Secret2)
 }
 
 type Login2RequestData struct {
 	Server  string
-	Secret1 string
-	Secret2 string
 	Secret3 string
 }
 
 func (l2rd *Login2RequestData) String() string {
-	return fmt.Sprintf("Server: '%s' Secret1: '%s' Secret2: '%s' Secret3: '%s'", l2rd.Server, l2rd.Secret1, l2rd.Secret2, l2rd.Secret3)
+	return fmt.Sprintf("Server: '%s' Secret3: '%s'", l2rd.Server, l2rd.Secret3)
 }
 
 type Login2ResponseData struct {
-	Token string
+	Secret4 string
 }
 
 func (l2r *Login2ResponseData) String() string {
-	return fmt.Sprintf("Token: '%s'", l2r.Token)
+	return fmt.Sprintf("Secret4: '%s'", l2r.Secret4)
 }
 
 type LogoutRequestData struct {
@@ -104,7 +111,7 @@ func (a *Auth) addServer(content string, record models.User) string {
 	a.Lock()
 	defer a.Unlock()
 
-	checksum := sha1.New()
+	checksum := HASH.New()
 	checksum.Write([]byte(content))
 
 	key := base64.StdEncoding.EncodeToString(checksum.Sum(nil))
@@ -113,6 +120,38 @@ func (a *Auth) addServer(content string, record models.User) string {
 		user:   record,
 	}
 	return key
+}
+
+func encodeServer(key []byte, verifier []byte, A []byte) string {
+	return fmt.Sprintf(
+		"%s:%s:%s",
+		AuthEncodeHexBytes(key),
+		AuthEncodeHexBytes(verifier),
+		AuthEncodeHexBytes(A),
+	)
+}
+
+func decodeServer(input string) *srp.SRPServer {
+	e := strings.Split(input, ":")
+	if len(e) < 3 {
+		panic("Not expected elements count!")
+	}
+
+	key := AuthDecodeHexString(e[0])
+	verifier := AuthDecodeHexString(e[1])
+	A := AuthDecodeHexString(e[2])
+
+	srv := srp.NewServer(SRP_PARAMS, verifier, key)
+	srv.SetA(A)
+
+	return srv
+}
+
+func LogStringChecksum(name string, content string) {
+	checksum := HASH.New()
+	checksum.Write([]byte(content))
+
+	log.Printf("%s: %x", name, checksum.Sum(nil))
 }
 
 func (a *Auth) forgetServer(key string) {
@@ -137,36 +176,15 @@ func (a *Auth) getServer(key string) (AuthServer, bool) {
 
 func (a *Auth) PostRegister(w http.ResponseWriter, r *http.Request) {
 
-	var requestData RegisterRequestData
 	var responseData RegisterResponseData
 
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&requestData); err != nil {
+	requestData := AuthDecodeJson[RegisterRequestData](r.Body, func(err error) {
 		log.Printf("Register request decoding error: %s", err)
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+	})
+	if requestData == nil {
 		return
 	}
-
-	// TODO: Register
-	log.Printf("Register data: %s", requestData.String())
-
-	s, err := srp.New(N_BITS)
-	if err != nil {
-		log.Printf("Srp instance not created. Error: %s", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	v, err := s.Verifier([]byte(requestData.Login), []byte(requestData.Secret0))
-	if err != nil {
-		log.Printf("Verifier not created. Error: %s", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	oi, ov := v.Encode()
-
-	//log.Printf("V: i: %s v: %s", oi, ov)
 
 	users, err := a.db.Users()
 	if err != nil {
@@ -175,12 +193,27 @@ func (a *Auth) PostRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userId, err := users.Insert(models.User{
-		Login: requestData.Login,
-		Mail:  requestData.Mail,
-		Ii:    oi,
-		Iv:    ov,
+	_, err = users.Find(func(record models.User) bool {
+		return record.Login == requestData.Login
 	})
+	if err != nil && (err != ifaces.ErrEmptyTable && err != ifaces.ErrNoSuchRecord) {
+		log.Printf("User with login '%s' already registered!", requestData.Login)
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Register data: %s", requestData.String())
+
+	// Table contains base64 encoded data
+	user := models.User{
+		Login:    requestData.Login,
+		Salt:     requestData.Salt,
+		Verifier: requestData.Verifier,
+	}
+
+	log.Printf("Register user: Login: '%s' Salt: '%s' Verifier: '%s'", user.Login, user.Salt, user.Verifier)
+
+	userId, err := users.Insert(user)
 	if err != nil {
 		log.Printf("Can't insert data into database: %s", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -189,30 +222,24 @@ func (a *Auth) PostRegister(w http.ResponseWriter, r *http.Request) {
 
 	responseData.UserId = userId
 
-	encoder := json.NewEncoder(w)
-	if err := encoder.Encode(responseData); err != nil {
-		log.Printf("Register response encoding error: %s", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	log.Printf("Register response: %s", responseData.String())
+
+	AuthEncodeAndWriteJson(w, responseData)
 }
 
 func (a *Auth) PostLogin(w http.ResponseWriter, r *http.Request) {
 
-	var requestData LoginRequestData
 	var responseData LoginResponseData
 
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&requestData); err != nil {
+	requestData := AuthDecodeJson[LoginRequestData](r.Body, func(err error) {
 		log.Printf("Login request decoding error: %s", err)
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+	})
+	if requestData == nil {
 		return
 	}
 
-	// TODO: Login
 	log.Printf("Login data: %s", requestData.String())
-
-	_, A, err := srp.ServerBegin(requestData.Secret1)
 
 	users, err := a.db.Users()
 	if err != nil {
@@ -220,8 +247,6 @@ func (a *Auth) PostLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-
-	//log.Printf("id: %s", id)
 
 	record, err := users.Find(func(u models.User) bool {
 		return u.Login == requestData.Login
@@ -232,43 +257,35 @@ func (a *Auth) PostLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//log.Printf("record.Iv: %s", record.Iv)
+	log.Printf("record Salt: '%s' Verifier: '%s'", record.Salt, record.Verifier)
 
-	s, v, err := srp.MakeSRPVerifier(record.Iv)
-	if err != nil {
-		log.Printf("Can't make srp verifier: %s", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	//salt := AuthDecodeString(record.Salt)
+	verifier := AuthDecodeString(record.Verifier)
 
-	srv, err := s.NewServer(v, A)
-	if err != nil {
-		log.Printf("Can't create srp server instance: %s", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	//log.Printf("salt: '%s' verifier: '%s'", salt, verifier)
 
-	//responseData.Secret1 = requestData.Secret1
-	responseData.Secret2 = srv.Credentials()
-	responseData.Server = a.addServer(srv.Marshal(), record)
+	key := srp.GenKey()
+	A := AuthDecodeString(requestData.Secret1)
 
-	encoder := json.NewEncoder(w)
-	if err := encoder.Encode(responseData); err != nil {
-		log.Printf("Login response encoding error: %s", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	srv := srp.NewServer(SRP_PARAMS, verifier, key)
+
+	responseData.Server = a.addServer(encodeServer(key, verifier, A), record)
+	responseData.Secret2 = AuthEncodeBytes(srv.ComputeB())
+
+	log.Printf("Login response: %s", responseData.String())
+
+	AuthEncodeAndWriteJson(w, responseData)
 }
 
 func (a *Auth) PostLogin2(w http.ResponseWriter, r *http.Request) {
 
-	var requestData Login2RequestData
 	var responseData Login2ResponseData
 
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&requestData); err != nil {
-		log.Printf("Login2 request decoding error: %s", err)
+	requestData := AuthDecodeJson[Login2RequestData](r.Body, func(err error) {
+		log.Printf("Login request decoding error: %s", err)
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+	})
+	if requestData == nil {
 		return
 	}
 
@@ -283,43 +300,35 @@ func (a *Auth) PostLogin2(w http.ResponseWriter, r *http.Request) {
 	// Forget SRP context
 	defer a.forgetServer(requestData.Server)
 
-	srv, err := srp.UnmarshalServer(server.server)
-	if err != nil {
-		log.Printf("Can't unmarshal srp server instance: %s", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	//log.Printf("Server to decode: %s", server.server)
 
-	proof, ok := srv.ClientOk(requestData.Secret3)
-	if !ok {
-		log.Printf("Authentication failed!")
+	srv := decodeServer(server.server)
+
+	serverM2, err := srv.CheckM1(AuthDecodeString(requestData.Secret3))
+	if err != nil {
+		log.Printf("Server M1 err: %s", err)
 		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 		return
 	}
 
-	// TODO: Create session for user. Autorized user info in server.user!
-	responseData.Token = proof
+	responseData.Secret4 = AuthEncodeBytes(serverM2)
 
-	serverKey := base64.StdEncoding.EncodeToString(srv.RawKey())
-	log.Printf("server key: %s", serverKey)
+	log.Printf("Login2 response: %s", responseData.String())
 
-	encoder := json.NewEncoder(w)
-	if err := encoder.Encode(responseData); err != nil {
-		log.Printf("Login2 response encoding error: %s", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	log.Printf("Server K: '%s'", AuthEncodeBytes(srv.ComputeK()))
+
+	AuthEncodeAndWriteJson(w, responseData)
 }
 
 func (a *Auth) PostLogout(w http.ResponseWriter, r *http.Request) {
-	var requestData LogoutRequestData
+	// 	var requestData LogoutRequestData
 
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(&requestData); err != nil {
-		log.Printf("Logout request decoding error: %s", err)
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
+	// 	decoder := json.NewDecoder(r.Body)
+	// 	if err := decoder.Decode(&requestData); err != nil {
+	// 		log.Printf("Logout request decoding error: %s", err)
+	// 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+	// 		return
+	// 	}
 
-	// TODO: Logout
+	// 	// TODO: Logout
 }

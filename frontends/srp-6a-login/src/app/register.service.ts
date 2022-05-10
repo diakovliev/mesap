@@ -1,3 +1,4 @@
+import { HttpClient } from '@angular/common/http';
 import { Observable, from, map, tap, of } from 'rxjs';
 import { Injectable } from '@angular/core';
 
@@ -20,10 +21,13 @@ export interface RegisteredUserData {
 })
 export class RegisterService {
 
-  SALT_SIZE = 0
-  ENCODING = 'base64'
+  SALT_SIZE = 32
+  ENCODING = 'hex'
+  //ENCODING = 'base64'
 
-  constructor() { }
+  API_ROOT = "/api"
+
+  constructor(private _http: HttpClient) { }
 
   registerUser(data: RegisterData): Observable<RegisteredUserData> {
 
@@ -34,7 +38,7 @@ export class RegisterService {
     return init.pipe(
       tap(b => console.log("[use salt] " + b.toString(this.ENCODING))),
       map(salt => {
-        var v = SRP.computeVerifier(SRP.params[1024], salt, Buffer.from(data.login), Buffer.from(data.password))
+        var v = SRP.computeVerifier(SRP.params[4096], salt, Buffer.from(data.login), Buffer.from(data.password))
         return { login: data.login, salt: salt.toString(this.ENCODING), verifier: v.toString(this.ENCODING) }
       })
     )
