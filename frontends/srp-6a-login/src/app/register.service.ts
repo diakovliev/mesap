@@ -92,12 +92,12 @@ export class RegisterService {
     return zip(s, k)
   }
 
-  private newClient(data: IRegisterData): Observable<boolean> {
+  private newClient(data: IRegisterData): Observable<Buffer> {
     return this.newKey().pipe(
       tap(([salt, a]) => console.log("[login use] salt: " + salt.toString(this.ENCODING) + " a: " + a.toString(this.ENCODING))),
       map(([salt, a]) => {
         this._client = new SrpClient(this.SRP_PARAMS, salt, Buffer.from(data.login), Buffer.from(data.password), a, false)
-        return true
+        return this._client.computeA()
       }),
     )
   }
@@ -111,32 +111,28 @@ export class RegisterService {
         map(salt => [ salt, SRP.computeVerifier(this.SRP_PARAMS, salt, Buffer.from(data.login), Buffer.from(data.password)) ] ),
         map(([s, v]) => ({ login: Buffer.from(data.login).toString(this.ENCODING), salt: s.toString(this.ENCODING), verifier: v.toString(this.ENCODING) } as IRegisterRequest) ),
         tap(r => console.log("[register request] " + JSON.stringify(r))),
-        switchMap(request => this._http.post<any>(`${this.API_ROOT}/register`, request, { responseType: 'json' })),
         catchError(this.handleError),
-        map(response => ({ UserId: response.UserId } as IRegisteredUserData)),
+        switchMap(request => this._http.post<IRegisteredUserData>(`${this.API_ROOT}/register`, request, { responseType: 'json' })),
       )
 
   }
 
-  loginUser(data: IRegisterData): Observable<any> {
+  loginUser(data: IRegisterData): Observable<ILoginResult> {
 
     console.log("[loginUser] called")
 
     return this.newClient(data).pipe(
-      map(() => this._client!.computeA()),
       map(A => ({ Login: Buffer.from(data.login).toString(this.ENCODING), Secret1: Buffer.from(A).toString(this.ENCODING) } as ILoginRequestData)),
       tap(r => console.log("[login request] " + JSON.stringify(r))),
-      switchMap(request => this._http.post<any>(`${this.API_ROOT}/login`, request, { responseType: 'json' })),
       catchError(this.handleError),
-      map(response => [ response.Server, Buffer.from(response.Secret2, this.ENCODING) ] ),
-      map(([server, B]) => {
-        this._client!.setB(B)
-        return { Server: server, Secret3: Buffer.from(this._client!.computeM1()).toString(this.ENCODING) } as ILogin2RequestData
+      switchMap(request => this._http.post<ILoginResponseData>(`${this.API_ROOT}/login`, request, { responseType: 'json' })),
+      map(response => {
+        this._client!.setB(Buffer.from(response.Secret2, this.ENCODING))
+        return { Server: response.Server, Secret3: Buffer.from(this._client!.computeM1()).toString(this.ENCODING) } as ILogin2RequestData
       }),
-      switchMap(request => this._http.post<any>(`${this.API_ROOT}/login2`, request, { responseType: 'json' })),
-      map(response => Buffer.from(response.Secret4, this.ENCODING)),
-      map(M2 => {
-        this._client!.checkM2(M2)
+      switchMap(request => this._http.post<ILogin2ResponseData>(`${this.API_ROOT}/login2`, request, { responseType: 'json' })),
+      map(response => {
+        this._client!.checkM2(Buffer.from(response.Secret4, this.ENCODING))
         return { SessionId: Buffer.from(this._client!.computeK()).toString(this.ENCODING) } as ILoginResult
       }),
     )
