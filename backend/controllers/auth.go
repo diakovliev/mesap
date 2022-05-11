@@ -194,9 +194,10 @@ func (a *Auth) PostRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = users.Find(func(record models.User) bool {
+		log.Printf(" --- %s", record.Login)
 		return record.Login == requestData.Login
 	})
-	if err != nil && (err != ifaces.ErrEmptyTable && err != ifaces.ErrNoSuchRecord) {
+	if err == nil {
 		log.Printf("User with login '%s' already registered!", requestData.Login)
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return

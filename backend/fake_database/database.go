@@ -151,20 +151,14 @@ func (T *FakeTable[M]) Find(callback func(record M) bool) (M, error) {
 		T.parent.Unlock()
 	}()
 
-	err := ifaces.ErrEmptyTable
-
-	var res M
 	for _, record := range T.table {
-		err = ifaces.ErrNoSuchRecord
-
 		if callback(*record) {
-			res = *record
-			err = nil
-			break
+			return *record, nil
 		}
 	}
 
-	return res, err
+	var res M
+	return res, ifaces.ErrNoSuchRecord
 }
 
 ///////////////////////////////////////////////////////////////////////////////
